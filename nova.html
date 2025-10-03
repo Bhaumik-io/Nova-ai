@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova Assistant</title>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .assistant-orb {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #5a67d8 0%, #434190 100%);
+            box-shadow: 0 0 20px rgba(90, 103, 216, 0.5), 0 0 40px rgba(90, 103, 216, 0.3);
+            transition: all 0.3s ease-in-out;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .assistant-orb .mic-icon {
+            width: 50px;
+            height: 50px;
+            color: white;
+            opacity: 0.8;
+            transition: opacity 0.3s ease-in-out;
+        }
+
+        /* State Animations */
+        @keyframes pulse-idle {
+            0%, 100% { transform: scale(1); opacity: 0.9; }
+            50% { transform: scale(1.03); opacity: 1; }
+        }
+        @keyframes listen {
+            0% { box-shadow: 0 0 20px rgba(90, 103, 216, 0.5); }
+            50% { box-shadow: 0 0 40px rgba(129, 230, 217, 0.8), 0 0 60px rgba(129, 230, 217, 0.6); background: radial-gradient(circle, #81e6d9 0%, #4fd1c5 100%); }
+            100% { box-shadow: 0 0 20px rgba(90, 103, 216, 0.5); }
+        }
+        @keyframes process {
+            0% { transform: rotate(0deg) scale(1.05); }
+            100% { transform: rotate(360deg) scale(1.05); }
+        }
+
+        .state-awaiting-wakeword, .state-session-idle { animation: pulse-idle 4s infinite ease-in-out; }
+        .state-listening { animation: listen 1.5s infinite ease-in-out; transform: scale(1.1); }
+        .state-processing { animation: process 1s linear infinite; }
+        .state-speaking { transform: scale(1.1); background: radial-gradient(circle, #667eea 0%, #5a67d8 100%); cursor: default; }
+        .state-disabled { background: #4a5568; cursor: not-allowed; box-shadow: none; }
+        .state-disabled .mic-icon { opacity: 0.3; }
+
+        .hidden { display: none; }
+
+        /* Mobile responsiveness */
+        @media (max-width: 767px) {
+            .assistant-orb {
+                width: 100px;
+                height: 100px;
+            }
+            .assistant-orb .mic-icon {
+                width: 35px;
+                height: 35px;
+            }
+            body {
+                padding: 0.5rem;
+            }
+            #controls button {
+                padding: 0.5rem 1rem;
+            }
+            .bg-gray-800 {
+                min-height: 80px;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-2xl text-center">
+        <h1 class="text-4xl md:text-5xl font-bold mb-2 text-gray-200">Nova</h1>
+        <p id="status" class="text-lg text-indigo-300 mb-8 h-7">Click the button below to start</p>
+
+        <div class="flex justify-center mb-8">
+            <div id="assistantOrb" class="assistant-orb">
+                <svg id="micIcon" class="mic-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+            </div>
+        </div>
+
+        <div id="controls" class="space-x-4">
+             <button id="startButton" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg">
+                Start Session
+            </button>
+            <button id="endButton" class="hidden bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg">
+                End Session
+            </button>
+            <button id="stopSpeechButton" class="hidden bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg">
+                Stop Speaking
+            </button>
+        </div>
+
+        <div class="bg-gray-800 p-4 rounded-lg shadow-lg min-h-[120px] flex flex-col justify-between mt-8">
+            <div>
+                <h2 class="text-left font-semibold text-gray-400 text-sm">You said:</h2>
+                <p id="userTranscript" class="text-left text-gray-200 text-lg min-h-[28px]">-</p>
+            </div>
+            <hr class="border-gray-700 my-2">
+            <div>
+                <h2 class="text-left font-semibold text-gray-400 text-sm">Nova replied:</h2>
+                <p id="assistantResponse" class="text-left text-indigo-300 text-lg min-h-[28px]">-</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('service-worker.js')
+                .then(registration => {
+                    console.log('ServiceWorker registration successful with scope: ', registration.scope);
+                })
+                .catch(error => {
+                    console.log('ServiceWorker registration failed:', error);
+                });
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const assistantOrb = document.getElementById('assistantOrb');
+            const statusDisplay = document.getElementById('status');
+            const userTranscriptDisplay = document.getElementById('userTranscript');
+            const assistantResponseDisplay = document.getElementById('assistantResponse');
+            const startButton = document.getElementById('startButton');
+            const endButton = document.getElementById('endButton');
+            const stopSpeechButton = document.getElementById('stopSpeechButton');
+
+            const WAKE_WORD = 'nova';
+            let recognition;
+            let assistantState = 'disabled';
+            let isSpeaking = false;
+
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                updateState('disabled', 'Speech recognition not supported.');
+                startButton.disabled = true;
+                return;
+            }
+            
+            function initializeRecognition() {
+                recognition = new SpeechRecognition();
+                recognition.continuous = true;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+                recognition.onresult = handleRecognitionResult;
+                recognition.onerror = handleRecognitionError;
+                recognition.onend = handleRecognitionEnd;
+            }
+            initializeRecognition();
+
+            function updateState(newState, message) {
+                assistantState = newState;
+                assistantOrb.className = `assistant-orb state-${newState}`;
+                if (message) statusDisplay.textContent = message;
+
+                startButton.classList.toggle('hidden', newState !== 'disabled');
+                endButton.classList.toggle('hidden', newState === 'disabled' || newState === 'speaking');
+                stopSpeechButton.classList.toggle('hidden', newState !== 'speaking');
+            }
+
+            function startSession() {
+                if (assistantState !== 'disabled') return;
+                try {
+                    // On some mobile browsers, recognition.start() must be called in a user gesture event
+                    recognition.start();
+                    updateState('awaiting-wakeword', "Say 'Nova' to activate.");
+                } catch (e) {
+                    console.error("Error starting session:", e);
+                    updateState('disabled', 'Assistant failed to start.');
+                }
+            }
+
+            // Add event listener to handle microphone permission issues on mobile
+            navigator.permissions && navigator.permissions.query({ name: 'microphone' }).then((permissionStatus) => {
+                permissionStatus.onchange = () => {
+                    if (permissionStatus.state === 'denied') {
+                        updateState('disabled', 'Microphone permission denied.');
+                        endSession();
+                    }
+                };
+            }).catch(() => {
+                // Permissions API not supported, fallback to error handling in recognition.onerror
+            });
+            
+            function endSession() {
+                if (assistantState === 'disabled') return;
+                try { recognition.stop(); } catch(e) { console.warn("Recognition stop failed:", e); }
+                window.speechSynthesis.cancel();
+                isSpeaking = false;
+                updateState('disabled', 'Session ended. Click Start to begin.');
+                userTranscriptDisplay.textContent = '-';
+                assistantResponseDisplay.textContent = '-';
+            }
+
+            function enterIdleState() {
+                updateState('session-idle', 'Click the orb or say "Nova" to ask another question.');
+            }
+
+            function handleRecognitionResult(event) {
+                let interimTranscript = '';
+                let finalTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    const transcriptPart = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcriptPart + ' ';
+                    } else {
+                        interimTranscript += transcriptPart;
+                    }
+                }
+                
+                const currentDisplay = (finalTranscript + interimTranscript).trim().toLowerCase();
+                const fullCommand = finalTranscript.trim();
+
+                if (assistantState !== 'disabled' && currentDisplay.includes(WAKE_WORD)) {
+                    activateConversation(currentDisplay);
+                    return;
+                }
+
+                // Critically, ignore any recognition results while speaking or processing.
+                if (isSpeaking || assistantState === 'processing') {
+                    return;
+                }
+
+                if (assistantState === 'listening') {
+                    userTranscriptDisplay.textContent = `${currentDisplay}`;
+                    // Use a timeout to determine when the user has finished speaking
+                    clearTimeout(window.speechEndTimeout);
+                    window.speechEndTimeout = setTimeout(() => {
+                        if (fullCommand) processCommand(fullCommand);
+                    }, 1500);
+                }
+            }
+            
+            function activateConversation(transcript) {
+                const commandPart = transcript.split(WAKE_WORD)[1] || '';
+                userTranscriptDisplay.textContent = commandPart.trim() || '-';
+                assistantResponseDisplay.textContent = '-';
+                
+                updateState('listening', 'Listening for your command...');
+                
+                if (commandPart.trim()) {
+                    processCommand(commandPart.trim());
+                }
+            }
+
+            async function processCommand(command) {
+                if (!command) {
+                    enterIdleState();
+                    return;
+                }
+                updateState('processing', 'Thinking...');
+                try {
+                    const rawResponseText = await callGeminiAPI(command);
+                    const cleanResponseText = sanitizeTextForSpeech(rawResponseText);
+                    assistantResponseDisplay.textContent = cleanResponseText;
+                    speak(cleanResponseText, enterIdleState); 
+                } catch (error) {
+                    console.error("Error processing command:", error);
+                    speak("I had trouble with that. Please click the orb and try again.", enterIdleState);
+                }
+            }
+
+            function handleRecognitionError(event) {
+                console.error('Speech recognition error:', event.error);
+                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                    updateState('disabled', 'Microphone permission denied.');
+                    endSession();
+                } else if (event.error === 'no-speech') {
+                    console.log('No speech detected. Ready for new command.');
+                }
+            }
+
+            function handleRecognitionEnd() {
+                // If the session is not intentionally disabled, always try to restart recognition.
+                // This makes the microphone session robust.
+                if (assistantState !== 'disabled') {
+                    setTimeout(() => {
+                        try {
+                            if (assistantState !== 'disabled') recognition.start();
+                        } catch (e) {
+                             console.warn("Could not restart recognition on end:", e);
+                        }
+                    }, 500); // A brief delay before restarting.
+                }
+            }
+
+            function speak(text, onEndCallback) {
+                isSpeaking = true;
+                updateState('speaking', '...');
+                // Pause recognition during speaking to prevent interference
+                try { recognition.stop(); } catch(e) { console.warn("Stop recognition failed:", e); }
+                const utterance = new SpeechSynthesisUtterance(text);
+
+                utterance.onend = () => {
+                    isSpeaking = false;
+                    // Resume recognition after speaking
+                    if (assistantState !== 'disabled') {
+                        try {
+                            recognition.start();
+                        } catch (e) {
+                            console.warn("Resume recognition failed:", e);
+                        }
+                    }
+                    if (onEndCallback) onEndCallback();
+                };
+
+                utterance.onerror = (e) => {
+                    console.error('Speech synthesis error', e);
+                    isSpeaking = false;
+                    // Resume recognition after error
+                    if (assistantState !== 'disabled') {
+                        try {
+                            recognition.start();
+                        } catch (e) {
+                            console.warn("Resume recognition failed:", e);
+                        }
+                    }
+                    if (onEndCallback) onEndCallback();
+                };
+                window.speechSynthesis.speak(utterance);
+            }
+            
+            function sanitizeTextForSpeech(text) {
+                let cleanedText = text.replace(/[\*#_`~]/g, '');
+                cleanedText = cleanedText.replace(/\[.*?\]/g, '');
+                cleanedText = cleanedText.replace(/^\s*\d+\.\s*/gm, '');
+                cleanedText = cleanedText.replace(/\s+/g, ' ').trim();
+                return cleanedText;
+            }
+            
+            async function callGeminiAPI(prompt) {
+                // IMPORTANT: PASTE YOUR OWN API KEY HERE TO RUN INDEPENDENTLY
+                const apiKey = "AIzaSyAn1FPr9p9E0Lj9PQdeUD-ImR2laKEsn3g";
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                const systemPrompt = "You are Nova, a professional and highly intelligent AI assistant. Your purpose is to provide clear, accurate, and comprehensive information. Structure your answers in a logical way. When asked for opinions, provide a balanced view based on facts. Maintain a formal, helpful, and sophisticated tone at all times. Do not use markdown.";
+
+                const payload = {
+                    contents: [{ parts: [{ text: prompt }] }],
+                    tools: [{ "google_search": {} }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    if (apiKey === "") {
+                         throw new Error("API key is missing. Please add your API key to the script to run independently.");
+                    }
+                    throw new Error(`API request failed with status ${response.status}`);
+                }
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) return text;
+                throw new Error("Could not extract a valid response from the API.");
+            }
+            
+            startButton.addEventListener('click', startSession);
+            endButton.addEventListener('click', endSession);
+            stopSpeechButton.addEventListener('click', () => {
+                window.speechSynthesis.cancel();
+            });
+            assistantOrb.addEventListener('click', () => {
+                if (assistantState === 'session-idle' || assistantState === 'awaiting-wakeword') {
+                    activateConversation('');
+                }
+            });
+
+            // Password protection for installation
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                const password = prompt("Enter password to install Nova Assistant:");
+                if (password === "Protech Studios") {
+                    e.prompt();
+                    e.userChoice.then(choiceResult => {
+                        if (choiceResult.outcome === 'accepted') {
+                            console.log('User accepted the install prompt');
+                        } else {
+                            console.log('User dismissed the install prompt');
+                        }
+                    });
+                } else {
+                    alert("Incorrect password. Installation cancelled.");
+                }
+            });
+        });
+    </script>
+</body>
+</html>
